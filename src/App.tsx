@@ -241,7 +241,7 @@ export default function App() {
                 {phase === "recording" ? (
                   <button className="recbtn live" onClick={stop} aria-label="Stop recording"><span className="sq" />Stop <span className="time">{fmt(secs)}</span></button>
                 ) : (
-                  <button className="recbtn" onClick={start} disabled={busy}><Mic />Start Speaking</button>
+                  <button className="recbtn" onClick={start} disabled={busy || modelState !== "ready"}><Mic />Start Speaking</button>
                 )}
                 {phase === "recording" && (
                   <div className="meter">
@@ -278,7 +278,7 @@ export default function App() {
       <footer>
         <button className="link" disabled={busy} onClick={() => { setAboutFocus("top"); setAbout(true); }}>About</button>
         <button className="link" disabled={busy} onClick={() => { setAboutFocus("privacy"); setAbout(true); }}>Privacy</button>
-        <a href="https://github.com/jaysahu-ai" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/jaysahu-ai/prepme" target="_blank" rel="noopener noreferrer">GitHub</a>
       </footer>
     </main>
   );
