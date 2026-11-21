@@ -25,7 +25,11 @@ async function loadModel() {
   if (!loading) {
     // Import after installing fetch diagnostics so Transformers.js requests use the wrapper.
     loading = (async () => {
-      const { pipeline } = await import("@huggingface/transformers");
+      const { env, pipeline } = await import("@huggingface/transformers");
+      // Route Hub file requests through this app's Cloudflare Worker. This avoids
+      // browser CORS/network blocks on Hugging Face's redirected CDN hosts.
+      env.remoteHost = self.location.origin;
+      env.remotePathTemplate = "hf/{model}/resolve/{revision}/{file}";
       const model = await pipeline("automatic-speech-recognition", MODEL, {
         // Use the browser's local CPU/WASM backend for widest compatibility.
         device: "wasm",

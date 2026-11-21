@@ -37,26 +37,28 @@ npm run preview
 
 The production site is generated in `dist/`.
 
-## Deploy to Cloudflare Pages
+## Deploy to Cloudflare Workers
 
-Connect this repository to Cloudflare Pages and use:
+PrepMe is deployed as a static app with a small Cloudflare Worker route that fetches public model files from Hugging Face. The route avoids browser cross-origin failures; it does not receive recordings or transcripts. The configuration is in `wrangler.jsonc` and `worker.js`.
+
+In the Workers & Pages build settings, use:
 
 | Setting | Value |
 | --- | --- |
-| Framework preset | React (Vite) |
+| Framework preset | Vite |
 | Production branch | `main` |
 | Root directory | Leave blank |
 | Build command | `npm run build` |
-| Build output directory | `dist` |
+| Deploy command | `npx wrangler deploy` |
 
-Pages serves the built front end. PrepMe does not require a running Node.js server or a backend database.
+The Wrangler configuration serves the built front end from `dist/` and runs the model-file proxy only for `/hf/*` requests. No Node.js server or database is required.
 
 ## Privacy and storage
 
 - Microphone audio is processed in the browser. PrepMe does not upload recordings for transcription or analysis.
 - Saved audio, transcripts, word timings, and session metrics are stored in this site's IndexedDB on the current browser and device. They are not synced or backed up.
 - The theme preference is stored in local storage.
-- The speech model is downloaded from Hugging Face on first use and then cached by the browser. That download does not contain your recording.
+- The speech model is fetched from Hugging Face through this app's Cloudflare Worker on first visit and may be cached by the browser. The Worker only proxies public model files; recordings and transcripts stay in the browser and are not sent to it.
 - **Copilot is an optional external service.** Choosing “Get feedback in Copilot” copies a prompt containing the transcript and session metrics to the clipboard and opens Microsoft Copilot. Short prompts are included in the Copilot URL and sent to Microsoft when that page opens. Longer prompts are copied for you to paste.
 - Use **Delete all data** in the app's Privacy section to remove saved sessions and their recordings, transcripts, and results. Clearing this site's browser data also removes the locally saved sessions.
 
