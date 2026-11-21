@@ -11,6 +11,7 @@ const PITCH_FLAT = 2, PITCH_VARIED = 3.5;        // pitch variation in semitones
 type Phase = "idle" | "recording" | "processing";
 type View = "sessions" | "progress";
 type Dir = "down" | "up" | "range"; // which direction counts as improvement
+type ModelState = "loading" | "ready" | "error";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const fmtDuration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
@@ -42,6 +43,9 @@ const PrepMeMark = () => <svg className="app-mark" viewBox="0 0 64 64" fill="non
 export default function App() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [status, setStatus] = useState("");
+  const [modelState, setModelState] = useState<ModelState>("loading");
+  const [modelProgress, setModelProgress] = useState<number | null>(null);
+  const [modelError, setModelError] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
   const [open, setOpen] = useState<Session | null>(null);
   const [view, setView] = useState<View>("sessions");
@@ -61,12 +65,50 @@ export default function App() {
   const chunks = useRef<Blob[]>([]);
   const timer = useRef<number>();
   const worker = useRef<Worker>();
+  const pendingTranscription = useRef<{ resolve: (value: { text: string; words: Word[]; fillerText?: string }) => void; reject: (reason: Error) => void } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const meter = useRef<{ ctx: AudioContext; raf: number } | null>(null);
   const [speaking, setSpeaking] = useState(false);
 
   const refresh = async () => setSessions(await listSessions());
   useEffect(() => { refresh(); }, []);
+
+  // Prepare the speech model after the page appears so loading problems are visible before recording.
+  useEffect(() => {
+    const w = new Worker(new URL("./workers/whisper.worker.ts", import.meta.url), { type: "module" });
+    worker.current = w;
+    w.onmessage = e => {
+      const m = e.data;
+      if (m.type === "progress" && m.p.status === "progress") {
+        setModelProgress(Math.round(m.p.progress));
+      } else if (m.type === "model-ready") {
+        setModelState("ready"); setModelProgress(100); setModelError("");
+      } else if (m.type === "model-error") {
+        setModelState("error"); setModelError(m.message); setModelProgress(null);
+      } else if (m.type === "status") setStatus(m.status);
+      else if (m.type === "done") {
+        pendingTranscription.current?.resolve(m);
+        pendingTranscription.current = null;
+      } else if (m.type === "error") {
+        const error = new Error(m.message);
+        pendingTranscription.current?.reject(error);
+        pendingTranscription.current = null;
+      }
+    };
+    w.onerror = e => {
+      console.error("Worker error:", e);
+      const error = new Error("The speech model worker failed to load.");
+      setModelState("error"); setModelError(error.message);
+      pendingTranscription.current?.reject(error); pendingTranscription.current = null;
+    };
+    w.postMessage({ type: "preload" });
+    return () => { w.terminate(); worker.current = undefined; };
+  }, []);
+
+  function retryModel() {
+    setModelState("loading"); setModelProgress(null); setModelError("");
+    worker.current?.postMessage({ type: "retry" });
+  }
 
   // Scrolling live waveform: one new bar every STEP_MS slides in from the right and moves left.
   // Drawn straight to a canvas, so the page does not re-render on every frame.
@@ -142,18 +184,11 @@ export default function App() {
       setStatus("Preparing audio…");
       const audio = await decodeTo16kMono(blob);
       const duration = audio.length / 16000;
-      worker.current ??= new Worker(new URL("./workers/whisper.worker.ts", import.meta.url), { type: "module" });
       const w = worker.current;
-      w.onerror = e => { console.error("Worker error:", e); setStatus("The speech model failed to load. Check the console for details."); setPhase("idle"); };
+      if (!w) throw new Error("Speech model worker is unavailable. Refresh the page and try again.");
       const result = await new Promise<{ text: string; words: Word[]; fillerText?: string }>((resolve, reject) => {
-        w.onmessage = e => {
-          const m = e.data;
-          if (m.type === "progress" && m.p.status === "progress") setStatus(`Downloading speech model (first time only)… ${Math.round(m.p.progress)}%`);
-          else if (m.type === "status") setStatus(m.status);
-          else if (m.type === "done") resolve(m);
-          else if (m.type === "error") reject(new Error(m.message));
-        };
-        w.postMessage({ audio, thorough: true });
+        pendingTranscription.current = { resolve, reject };
+        w.postMessage({ type: "transcribe", audio, thorough: true });
       });
       setStatus("Analyzing voice…");
       const metrics: Metrics = { ...analyze(result.text, result.words, duration, undefined, result.fillerText), pitch: pitchStats(audio) };
@@ -198,6 +233,11 @@ export default function App() {
             <>
               <div className="home-fixed">
               <section className="recorder">
+                <div className={`model-status ${modelState}`} role="status" aria-live="polite">
+                  {modelState === "loading" && <span>Preparing speech model{modelProgress !== null ? `… ${modelProgress}%` : "…"} <span className="muted">(first visit may take a few minutes)</span></span>}
+                  {modelState === "ready" && <span>Speech model ready</span>}
+                  {modelState === "error" && <span>Couldn’t prepare the speech model. Check your connection and retry. <button className="link model-retry" onClick={retryModel} disabled={busy}>Retry</button>{modelError && <small className="model-error-detail">{modelError}</small>}</span>}
+                </div>
                 {phase === "recording" ? (
                   <button className="recbtn live" onClick={stop} aria-label="Stop recording"><span className="sq" />Stop <span className="time">{fmt(secs)}</span></button>
                 ) : (
@@ -256,12 +296,12 @@ function About({ onClose, onDeleted, focus }: { onClose: () => void; onDeleted: 
       <h2>About PrepMe</h2>
       <p>PrepMe helps you practice speaking out loud. Record yourself, get a report on pace, pitch, filler words, and repetitive language, and track how you improve from one session to the next.</p>
       <h3>How it works</h3>
-      <p>A speech model runs in your browser to turn your voice into text, and the analysis happens on your device. The model downloads once on first use and is cached after that.</p>
+      <p>A speech model runs in your browser to turn your voice into text, and the analysis happens on your device. PrepMe prepares the model in the background when you open the app; your browser may keep it cached for later visits.</p>
       <h3 ref={privacyRef} id="privacy-data">Privacy &amp; Data</h3>
       <ul>
         <li><strong>Recording and analysis:</strong> Your microphone audio is processed in this browser. PrepMe does not upload your recording for transcription or analysis.</li>
         <li><strong>Local storage:</strong> Saved recordings, transcripts, word timings, and session metrics are kept in this browser's IndexedDB. Your light or dark theme preference is stored in local storage. There is no PrepMe account, cloud database, backup, or device sync.</li>
-        <li><strong>Speech model download:</strong> On first use, the app downloads its speech model from Hugging Face. The model is cached by your browser; your recording is not part of that download.</li>
+        <li><strong>Speech model download:</strong> On your first visit, the app prepares its speech model from Hugging Face in the background. The model may be cached by your browser; your recording is not part of that download.</li>
         <li><strong>Microphone permission:</strong> Your browser asks for microphone access when you start speaking. You can revoke that permission in the browser's site settings.</li>
         <li><strong>Optional Copilot feedback:</strong> If you choose “Get feedback in Copilot,” PrepMe copies a prompt containing your transcript and session metrics to the clipboard and opens Microsoft Copilot. For short prompts, the prompt is included in the Copilot URL; opening that page sends it to Microsoft. Longer prompts are copied for you to paste into Copilot yourself.</li>
         <li><strong>Deleting data:</strong> “Delete all data” removes all saved sessions and their recordings, transcripts, and results from this browser. Clearing the browser's site data also removes PrepMe's local saved data.</li>
