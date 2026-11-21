@@ -29,7 +29,8 @@ async function loadModel() {
       // Route Hub file requests through this app's Cloudflare Worker. This avoids
       // browser CORS/network blocks on Hugging Face's redirected CDN hosts.
       env.remoteHost = self.location.origin;
-      env.remotePathTemplate = "hf/{model}/resolve/{revision}/{file}";
+      // v3 appends the requested filename after expanding this template.
+      env.remotePathTemplate = "hf/{model}/resolve/{revision}";
       const model = await pipeline("automatic-speech-recognition", MODEL, {
         // Use the browser's local CPU/WASM backend for widest compatibility.
         device: "wasm",
